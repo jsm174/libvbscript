@@ -1,0 +1,7 @@
+/build/
+/build-static/
+/out/
+/.vs/
+/.vscode/
+CMakeSettings.json
+.DS_Store

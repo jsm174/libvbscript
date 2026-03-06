@@ -1,0 +1,200 @@
+name: libvbscript
+on:
+  push:
+  pull_request:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Detect version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          VERSION=$(grep -Eo "project\(libvbscript VERSION ([0-9]+\.[0-9]+\.[0-9]+)" CMakeLists.txt | grep -Eo "[0-9]+\.[0-9]+\.[0-9]+")
+          echo "${VERSION}"
+          echo "tag=${VERSION}" >> $GITHUB_OUTPUT
+      - name: Check git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          GIT_TAG="${GITHUB_REF#refs/tags/}"
+          EXPECTED_TAG="v${{ steps.version.outputs.tag }}"
+          if [[ "${GIT_TAG}" != "${EXPECTED_TAG}" ]]; then
+            echo "Error: Git tag (${GIT_TAG}) does not match version from CMakeLists.txt (v${{ steps.version.outputs.tag }})"
+            exit 1
+          fi
+
+  build:
+    name: Build libvbscript-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    needs: [ version ]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, platform: win, arch: x64 }
+          - { os: macos-15, platform: macos, arch: arm64 }
+          - { os: macos-15, platform: macos, arch: x64 }
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: ubuntu-24.04-arm, platform: linux, arch: aarch64 }
+          - { os: ubuntu-24.04, platform: android, arch: arm64-v8a }
+          - { os: macos-15, platform: ios, arch: arm64 }
+          - { os: macos-15, platform: ios-simulator, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - if: (matrix.platform == 'win')
+        name: Install tools (win runner)
+        run: |
+          /c/msys64/usr/bin/bash.exe -l -c "pacman -S --noconfirm bison mingw-w64-x86_64-cmake mingw-w64-x86_64-gcc mingw-w64-x86_64-tools"
+      - if: (matrix.os == 'macos-15')
+        name: Install bison (mac runner)
+        run: |
+           brew install bison
+           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+      - if: (matrix.platform == 'linux')
+        name: Install bison (linux runner)
+        run: |
+           sudo apt-get update
+           sudo apt install bison
+      - name: Build libvbscript-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+             CURRENT_DIR="$(pwd)"
+             /c/msys64/usr/bin/bash.exe -l -c "
+                cd \"${CURRENT_DIR}\" &&
+                cmake -DBUILD_SHARED=ON -DPLATFORM=${{ matrix.platform }} -DARCH=${{ matrix.arch }} -DCMAKE_BUILD_TYPE=Release -B build &&
+                cmake --build build -- -j$(nproc)
+             "
+          elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+             if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+                CMAKE_OSX_ARCH="arm64"
+             else
+                CMAKE_OSX_ARCH="x86_64"
+             fi
+             NUM_PROCS=$(sysctl -n hw.ncpu)
+             cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=ON \
+                -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCH} \
+                -B build
+             cmake --build build -- -j${NUM_PROCS}
+          elif [[ "${{ matrix.platform }}" == "linux" ]]; then
+             NUM_PROCS=$(nproc)
+             cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=ON -B build
+             cmake --build build -- -j${NUM_PROCS}
+          elif [[ "${{ matrix.platform }}" == "ios" ]]; then
+             NUM_PROCS=$(sysctl -n hw.ncpu)
+             cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=OFF \
+                -DCMAKE_SYSTEM_NAME=iOS \
+                -DCMAKE_OSX_ARCHITECTURES=arm64 \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+                -B build
+             cmake --build build -- -j${NUM_PROCS}
+          elif [[ "${{ matrix.platform }}" == "ios-simulator" ]]; then
+             NUM_PROCS=$(sysctl -n hw.ncpu)
+             cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=OFF \
+                -DCMAKE_SYSTEM_NAME=iOS \
+                -DCMAKE_OSX_SYSROOT=iphonesimulator \
+                -DCMAKE_OSX_ARCHITECTURES=arm64 \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+                -B build
+             cmake --build build -- -j${NUM_PROCS}
+          elif [[ "${{ matrix.platform }}" == "android" ]]; then
+             NUM_PROCS=$(nproc)
+             cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED=ON \
+                -DCMAKE_SYSTEM_NAME=Android \
+                -DCMAKE_SYSTEM_VERSION=34 \
+                -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+                -DANDROID_NDK=${ANDROID_NDK_HOME} \
+                -B build
+             cmake --build build -- -j${NUM_PROCS}
+          fi
+      - name: Prepare artifacts
+        id: artifacts
+        run: |
+          mkdir tmp
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+             ARTIFACT_PATH="tmp"
+             cp build/vbscript64.dll tmp
+             cp build/vbscript64.lib tmp
+          else
+            ARTIFACT_PATH="libvbscript-${{ needs.version.outputs.tag }}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
+            if [[ "${{ matrix.platform }}" == "macos" ]]; then
+               cp -a build/*.dylib tmp
+            elif [[ "${{ matrix.platform }}" == "linux" ]]; then
+               cp -a build/*.{so,so.*} tmp
+            elif [[ "${{ matrix.platform }}" == "ios" || "${{ matrix.platform }}" == "ios-simulator" ]]; then
+               cp build/libvbscript.a tmp
+            elif [[ "${{ matrix.platform }}" == "android" ]]; then
+               cp build/libvbscript.so tmp
+            fi
+            cd tmp
+            tar -czvf ../${ARTIFACT_PATH} *
+          fi
+          echo "artifact_path=${ARTIFACT_PATH}" >> $GITHUB_OUTPUT
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvbscript-${{ needs.version.outputs.tag }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ steps.artifacts.outputs.artifact_path }}
+
+  post-build:
+    runs-on: macos-15
+    needs: [ version, build ]
+    name: Build libvbscript-macos
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Unpack artifacts
+        run: |
+          cd libvbscript-${{ needs.version.outputs.tag }}-macos-x64
+          tar -xzvf libvbscript-${{ needs.version.outputs.tag }}-macos-x64.tar.gz
+          cd ..
+          cd libvbscript-${{ needs.version.outputs.tag }}-macos-arm64
+          tar -xzvf libvbscript-${{ needs.version.outputs.tag }}-macos-arm64.tar.gz
+      - name: Combine macos architectures
+        run: |
+          mkdir tmp
+          find "libvbscript-${{ needs.version.outputs.tag }}-macos-arm64" -name "*.dylib" | while read -r file; do
+            if [ -L "$file" ]; then
+              cp -a "$file" "tmp/"
+            elif [ -f "$file" ]; then
+              filename=$(basename "$file")
+              lipo -create -output "tmp/$filename" \
+                "libvbscript-${{ needs.version.outputs.tag }}-macos-arm64/$filename" \
+                "libvbscript-${{ needs.version.outputs.tag }}-macos-x64/$filename"
+            fi
+          done
+      - name: Prepare artifacts
+        run: |
+          cd tmp
+          tar -czvf ../libvbscript-${{ needs.version.outputs.tag }}-macos.tar.gz *
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvbscript-${{ needs.version.outputs.tag }}-macos
+          path: libvbscript-${{ needs.version.outputs.tag }}-macos.tar.gz
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          zip -r libvbscript-${{ needs.version.outputs.tag }}-win-x64.zip libvbscript-${{ needs.version.outputs.tag }}-win-x64
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          draft: true
+          files: |
+            libvbscript-${{ needs.version.outputs.tag }}-win-x64.zip
+            libvbscript-${{ needs.version.outputs.tag }}-macos-arm64/libvbscript-${{ needs.version.outputs.tag }}-macos-arm64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-macos-x64/libvbscript-${{ needs.version.outputs.tag }}-macos-x64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-macos.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-linux-x64/libvbscript-${{ needs.version.outputs.tag }}-linux-x64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-linux-aarch64/libvbscript-${{ needs.version.outputs.tag }}-linux-aarch64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-ios-arm64/libvbscript-${{ needs.version.outputs.tag }}-ios-arm64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-ios-simulator-arm64/libvbscript-${{ needs.version.outputs.tag }}-ios-simulator-arm64.tar.gz
+            libvbscript-${{ needs.version.outputs.tag }}-android-arm64-v8a/libvbscript-${{ needs.version.outputs.tag }}-android-arm64-v8a.tar.gz
