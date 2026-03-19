@@ -76,7 +76,6 @@ bison_target(vbsparser
 
 set(LIBVBSCRIPT_SOURCES
    src/libvbscript.c
-   src/wine.c
 
    wine/dlls/oleaut32/oleaut.c
    wine/dlls/oleaut32/variant.c
@@ -105,20 +104,47 @@ set(LIBVBSCRIPT_SOURCES
    wine/dlls/kernelbase/locale.c
 )
 
-set(LIBVBSCRIPT_INCLUDE_DIRS
-   ${CMAKE_SOURCE_DIR}/include
+# On win-mingw, use the minimal wine_mingw.c instead of the full wine.c stub layer
+if(PLATFORM STREQUAL "win-mingw")
+   list(APPEND LIBVBSCRIPT_SOURCES src/wine_mingw.c)
+else()
+   list(APPEND LIBVBSCRIPT_SOURCES src/wine.c)
+endif()
+
+# Wine headers are always needed internally for the engine source code.
+# On win-mingw, they are PRIVATE (consumers use real Windows headers).
+# On other platforms, they are PUBLIC (consumers need them).
+set(LIBVBSCRIPT_WINE_INCLUDE_DIRS
    ${CMAKE_SOURCE_DIR}/wine/include
    ${CMAKE_SOURCE_DIR}/atl/include
    ${CMAKE_SOURCE_DIR}/atlmfc/include
 )
 
-set(LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS
-   ${CMAKE_SOURCE_DIR}/wine/dlls/vbscript
-   ${CMAKE_SOURCE_DIR}/wine/dlls/oleaut32
-   ${CMAKE_SOURCE_DIR}/wine/dlls/kernelbase
-   ${CMAKE_SOURCE_DIR}/wine/dlls/scrrun
-   ${CMAKE_SOURCE_DIR}/wine/dlls/atl
-)
+if(PLATFORM STREQUAL "win-mingw")
+   set(LIBVBSCRIPT_PUBLIC_INCLUDE_DIRS
+      ${CMAKE_SOURCE_DIR}/include
+   )
+   set(LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS
+      ${LIBVBSCRIPT_WINE_INCLUDE_DIRS}
+      ${CMAKE_SOURCE_DIR}/wine/dlls/vbscript
+      ${CMAKE_SOURCE_DIR}/wine/dlls/oleaut32
+      ${CMAKE_SOURCE_DIR}/wine/dlls/kernelbase
+      ${CMAKE_SOURCE_DIR}/wine/dlls/scrrun
+      ${CMAKE_SOURCE_DIR}/wine/dlls/atl
+   )
+else()
+   set(LIBVBSCRIPT_PUBLIC_INCLUDE_DIRS
+      ${CMAKE_SOURCE_DIR}/include
+      ${LIBVBSCRIPT_WINE_INCLUDE_DIRS}
+   )
+   set(LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS
+      ${CMAKE_SOURCE_DIR}/wine/dlls/vbscript
+      ${CMAKE_SOURCE_DIR}/wine/dlls/oleaut32
+      ${CMAKE_SOURCE_DIR}/wine/dlls/kernelbase
+      ${CMAKE_SOURCE_DIR}/wine/dlls/scrrun
+      ${CMAKE_SOURCE_DIR}/wine/dlls/atl
+   )
+endif()
 
 set(LIBVBSCRIPT_COMPILE_DEFINITIONS
    __LIBVBSCRIPT__
@@ -144,7 +170,7 @@ endif()
 if(BUILD_SHARED)
    add_library(vbscript_shared SHARED ${LIBVBSCRIPT_SOURCES})
 
-   target_include_directories(vbscript_shared PUBLIC ${LIBVBSCRIPT_INCLUDE_DIRS} PRIVATE ${LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS})
+   target_include_directories(vbscript_shared PUBLIC ${LIBVBSCRIPT_PUBLIC_INCLUDE_DIRS} PRIVATE ${LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS})
    target_compile_definitions(vbscript_shared PRIVATE ${LIBVBSCRIPT_COMPILE_DEFINITIONS})
    target_compile_options(vbscript_shared PRIVATE ${LIBVBSCRIPT_COMPILE_OPTIONS})
 
@@ -154,6 +180,17 @@ if(BUILD_SHARED)
 
    if(MINGW)
       target_link_options(vbscript_shared PRIVATE -Wl,--allow-multiple-definition)
+      target_link_libraries(vbscript_shared PRIVATE
+         ole32
+         oleaut32
+         advapi32
+         user32
+         gdi32
+         kernel32
+         ntdll
+         pathcch
+         version
+      )
       if(GENDEF AND DLLTOOL)
          add_custom_command(TARGET vbscript_shared POST_BUILD
             COMMAND ${GENDEF} "$<TARGET_FILE:vbscript_shared>"
@@ -177,23 +214,27 @@ if(BUILD_SHARED)
       LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib
    )
    install(FILES ${CMAKE_SOURCE_DIR}/include/libvbscript.h DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
-   install(DIRECTORY ${CMAKE_SOURCE_DIR}/wine/include/ DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   if(NOT PLATFORM STREQUAL "win-mingw")
+      install(DIRECTORY ${CMAKE_SOURCE_DIR}/wine/include/ DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   endif()
 
    if(PLATFORM STREQUAL "win-mingw" OR PLATFORM STREQUAL "macos" OR PLATFORM STREQUAL "linux")
       add_executable(vbscript_test src/vbscript_test.c)
       target_link_libraries(vbscript_test PRIVATE vbscript_shared)
-      target_compile_definitions(vbscript_test PRIVATE
-         __LIBVBSCRIPT__
-         __WINESRC__
-         WINE_UNICODE_NATIVE
-      )
+      if(NOT PLATFORM STREQUAL "win-mingw")
+         target_compile_definitions(vbscript_test PRIVATE
+            __LIBVBSCRIPT__
+            __WINESRC__
+            WINE_UNICODE_NATIVE
+         )
+      endif()
    endif()
 endif()
 
 if(BUILD_STATIC)
    add_library(vbscript_static STATIC ${LIBVBSCRIPT_SOURCES})
 
-   target_include_directories(vbscript_static PUBLIC ${LIBVBSCRIPT_INCLUDE_DIRS} PRIVATE ${LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS})
+   target_include_directories(vbscript_static PUBLIC ${LIBVBSCRIPT_PUBLIC_INCLUDE_DIRS} PRIVATE ${LIBVBSCRIPT_PRIVATE_INCLUDE_DIRS})
    target_compile_definitions(vbscript_static PRIVATE ${LIBVBSCRIPT_COMPILE_DEFINITIONS})
    target_compile_options(vbscript_static PRIVATE ${LIBVBSCRIPT_COMPILE_OPTIONS})
 
@@ -211,6 +252,8 @@ if(BUILD_STATIC)
       LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib
    )
    install(FILES ${CMAKE_SOURCE_DIR}/include/libvbscript.h DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
-   install(DIRECTORY ${CMAKE_SOURCE_DIR}/wine/include/ DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   if(NOT PLATFORM STREQUAL "win-mingw")
+      install(DIRECTORY ${CMAKE_SOURCE_DIR}/wine/include/ DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   endif()
 
 endif()

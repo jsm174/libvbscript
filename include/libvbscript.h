@@ -13,10 +13,18 @@
 
 #include <stdarg.h>
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+/* On real Windows (MinGW), use native headers */
+#include <windows.h>
+#include <ole2.h>
+#include <activscp.h>
+#else
+/* On standalone (Linux/macOS/etc.), use Wine headers */
 #include "windef.h"
 #include "winbase.h"
 #include "ole2.h"
 #include "activscp.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +57,7 @@ typedef struct {
 
 LIBVBSCRIPT_API void libvbscript_init(const libvbscript_callbacks_t* callbacks);
 LIBVBSCRIPT_API void libvbscript_shutdown(void);
+LIBVBSCRIPT_API HRESULT libvbscript_create_engine(REFIID riid, void** ppv);
 
 #ifdef __cplusplus
 }
